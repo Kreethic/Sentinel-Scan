@@ -1,9 +1,9 @@
 """
-404 Scanner - Offline Version
--------------------------------
-A vulnerability scanner using built-in Kali Linux tools.
-No API key required. Works completely offline.
-Run: sudo python3 404_scanner_offline.py
+Sentinel Scan - Online Version
+--------------------------------
+A vulnerability scanner using built-in Kali Linux tools over network.
+Requires internet/network connection to scan targets.
+Run: sudo python3 main.py
 """
 
 import os
@@ -11,7 +11,11 @@ import re
 import sys
 import subprocess
 import shutil
+import socket
+import hashlib
+import time
 from datetime import datetime
+import requests
 
 # ──────────────────────────────────────────────
 # Styling / UI Helpers
@@ -49,7 +53,7 @@ def banner():
 |  $$$$$$/|  $$$$$$$|  $$$$$$$| $$  | $$
  \______/  \_______/ \_______/|__/  |__/
 {Color.RESET}
-{Color.MAGENTA}         Sentinel Scan  | Powered by Kreethic  |  Sentry Squad  |  Offline Edition{Color.RESET}
+{Color.MAGENTA}         Sentinel Scan  |  Team 404  |  Sentry Squad  |  Online Edition{Color.RESET}
 """)
 
 def divider(char="─", length=70, color=Color.CYAN):
@@ -108,6 +112,139 @@ def run_command(cmd: list, timeout: int = 120) -> str:
         return f"[x] Tool not found: {cmd[0]} — install with: {REQUIRED_TOOLS.get(cmd[0], 'apt install ' + cmd[0])}"
     except Exception as e:
         return f"[x] Error: {e}"
+
+
+
+# ──────────────────────────────────────────────
+# Online Threat Intelligence (No API Key)
+# ──────────────────────────────────────────────
+
+def check_internet() -> bool:
+    """Check if internet is available."""
+    try:
+        socket.setdefaulttimeout(3)
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("8.8.8.8", 53))
+        return True
+    except Exception:
+        return False
+
+def urlhaus_check_url(url: str) -> dict:
+    """Check a URL against URLhaus malware database."""
+    try:
+        lookup = url if url.startswith("http") else f"http://{url}"
+        r = requests.post("https://urlhaus-api.abuse.ch/v1/url/",
+                          data={"url": lookup}, timeout=8)
+        data = r.json()
+        status = data.get("query_status", "")
+        if status == "ok":
+            return {
+                "malicious"  : True,
+                "url_status" : data.get("url_status", "N/A"),
+                "threat"     : data.get("threat", "N/A"),
+                "tags"       : ", ".join(data.get("tags") or []),
+            }
+    except Exception:
+        pass
+    return {"malicious": False}
+
+def urlhaus_check_host(host: str) -> dict:
+    """Check a host/domain/IP against URLhaus."""
+    try:
+        r = requests.post("https://urlhaus-api.abuse.ch/v1/host/",
+                          data={"host": host}, timeout=8)
+        data = r.json()
+        if data.get("query_status") == "is_host":
+            urls    = data.get("urls", [])
+            online  = [u for u in urls if u.get("url_status") == "online"]
+            tags    = set()
+            for u in urls:
+                tags.update(u.get("tags") or [])
+            return {
+                "malicious"     : True,
+                "total_urls"    : len(urls),
+                "active_urls"   : len(online),
+                "tags"          : ", ".join(tags),
+            }
+    except Exception:
+        pass
+    return {"malicious": False}
+
+def ipwhois_check(ip: str) -> dict:
+    """Get IP geolocation and reputation info."""
+    try:
+        r = requests.get(f"https://ipwho.is/{ip}", timeout=8)
+        data = r.json()
+        if data.get("success"):
+            isp = data.get("connection", {}).get("isp", "")
+            org = data.get("connection", {}).get("org", "")
+            suspicious_keywords = ["tor", "vpn", "proxy", "hosting",
+                                    "datacenter", "bulletproof", "anonymous"]
+            is_suspicious = any(k in (isp + org).lower() for k in suspicious_keywords)
+            return {
+                "country"      : data.get("country", "N/A"),
+                "city"         : data.get("city", "N/A"),
+                "isp"          : isp,
+                "org"          : org,
+                "is_suspicious": is_suspicious,
+            }
+    except Exception:
+        pass
+    return {}
+
+def malwarebazaar_check(file_hash: str) -> dict:
+    """Check a file hash against MalwareBazaar."""
+    try:
+        r = requests.post("https://mb-api.abuse.ch/api/v1/",
+                          data={"query": "get_info", "hash": file_hash}, timeout=10)
+        data = r.json()
+        if data.get("query_status") == "ok":
+            details = data.get("data", [{}])[0]
+            return {
+                "malicious"  : True,
+                "signature"  : details.get("signature", "N/A"),
+                "file_type"  : details.get("file_type", "N/A"),
+                "first_seen" : details.get("first_seen", "N/A"),
+                "tags"       : ", ".join(details.get("tags") or []),
+            }
+    except Exception:
+        pass
+    return {"malicious": False}
+
+def enrich_with_online(result: dict, target: str, online: bool):
+    """Add online threat intel to any scan result."""
+    if not online:
+        return result
+    log_info("Enriching with online threat intelligence...")
+    host = re.sub(r"https?://", "", target).split("/")[0]
+
+    # URLhaus host check
+    host_data = urlhaus_check_host(host)
+    if host_data.get("malicious"):
+        active = host_data.get("active_urls", 0)
+        total  = host_data.get("total_urls", 0)
+        tags   = host_data.get("tags", "")
+        if active > 0:
+            result["flags"].append(f"[ONLINE] URLhaus: {active} ACTIVE malicious URLs on this host!")
+        elif total > 0:
+            result["flags"].append(f"[ONLINE] URLhaus: {total} historical malicious URL(s) on this host")
+        if tags:
+            result["info"]["Threat Tags"] = tags
+
+    # IPwho.is check if target looks like an IP
+    try:
+        socket.inet_aton(host)
+        ip_data = ipwhois_check(host)
+        if ip_data:
+            result["info"]["Country"] = ip_data.get("country", "N/A")
+            result["info"]["ISP"]     = ip_data.get("isp", "N/A")
+            result["info"]["Org"]     = ip_data.get("org", "N/A")
+            if ip_data.get("is_suspicious"):
+                result["flags"].append(f"[ONLINE] Suspicious ISP/Org detected: {ip_data.get('isp')}")
+    except Exception:
+        pass
+
+    result["risk"] = assess_risk(result["flags"])
+    return result
 
 
 # ──────────────────────────────────────────────
@@ -702,7 +839,7 @@ def generate_report(result: dict) -> str:
         lines.append("")
 
     lines.append("=" * 70)
-    lines.append("  Generated by 404 Scanner | Team 404 | Sentry Squad")
+    lines.append("  Generated by Sentinel Scan | Team 404 | Sentry Squad | Online Edition")
     lines.append("=" * 70)
     return "\n".join(lines)
 
@@ -762,49 +899,59 @@ def get_choice() -> int:
 def get_target(prompt="Enter Target (IP/Domain/URL)") -> str:
     return input(f"{Color.CYAN}{prompt:35}: {Color.RESET}").strip()
 
-def run_scan(choice: int):
+def run_scan(choice: int, online: bool):
     print()
     result = None
     try:
         if choice == 1:
             target = get_target("Enter Target (IP/Domain)")
             result = scan_ports_nmap(target)
+            result = enrich_with_online(result, target, online)
 
         elif choice == 2:
             target = get_target("Enter Target (IP/Domain)")
             result = scan_vuln_nmap(target)
+            result = enrich_with_online(result, target, online)
 
         elif choice == 3:
             target = get_target("Enter Target (IP/Domain)")
             result = scan_os_nmap(target)
+            result = enrich_with_online(result, target, online)
 
         elif choice == 4:
             target = get_target("Enter Target (URL/Domain)")
             result = scan_web_nikto(target)
+            result = enrich_with_online(result, target, online)
 
         elif choice == 5:
             target = get_target("Enter Target (URL/Domain)")
             result = scan_dirs_gobuster(target)
+            result = enrich_with_online(result, target, online)
 
         elif choice == 6:
             target = get_target("Enter Domain")
             result = scan_whois(target)
+            result = enrich_with_online(result, target, online)
 
         elif choice == 7:
             target = get_target("Enter Domain/URL")
             result = scan_ssl(target)
+            result = enrich_with_online(result, target, online)
 
         elif choice == 8:
             target = get_target("Enter Target (URL/Domain)")
             result = scan_whatweb(target)
+            result = enrich_with_online(result, target, online)
 
         elif choice == 9:
             target = get_target("Enter Domain")
             result = scan_dns_dig(target)
+            result = enrich_with_online(result, target, online)
 
         elif choice == 10:
             target = get_target("Enter Target (IP/Domain/URL)")
             result = full_scan(target)
+            result = enrich_with_online(result, target, online)
 
         elif choice == 11:
             check_tools()
@@ -842,17 +989,29 @@ def main():
             print(f"{Color.YELLOW}[!] Run with: sudo python3 main.py{Color.RESET}\n")
 
     banner()
-    log_success("Offline mode — using Kali Linux built-in tools!\n")
+
+    # ── Check internet connectivity ──
+    log_info("Checking internet connection...")
+    online = check_internet()
+    if online:
+        log_success("Network connected — Online mode active!")
+        print(f"  {Color.CYAN}[*]{Color.RESET} Kali tools + URLhaus + MalwareBazaar + IPwho.is enrichment enabled\n")
+    else:
+        log_warn("No network connection detected — some scans may not work.")
+        print(f"  {Color.YELLOW}[!]{Color.RESET} Please check your internet connection\n")
 
     while True:
         show_menu()
+        # Show current mode in menu
+        mode = f"{Color.GREEN}ONLINE (Network Connected){Color.RESET}" if online else f"{Color.RED}NO NETWORK — Check Connection{Color.RESET}"
+        print(f"  Mode: {mode}\n")
         choice = get_choice()
         if choice == len(MENU_OPTIONS):
             print(f"\n{Color.CYAN}{'═' * 65}{Color.RESET}")
             print(f"{Color.BOLD}{Color.MAGENTA}  Goodbye! Sentinel Scan signing off. Stay Secure! 🛡️{Color.RESET}")
             print(f"{Color.CYAN}{'═' * 65}{Color.RESET}\n")
             sys.exit(0)
-        run_scan(choice)
+        run_scan(choice, online)
 
 if __name__ == "__main__":
     main()
