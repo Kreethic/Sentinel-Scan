@@ -56,7 +56,7 @@ def banner():
 {Color.MAGENTA}         Sentinel Scan  | Powered by Kreethic  |  Sentry Squad  |  Online Edition{Color.RESET}
 
 
-                    The Scanning is take some time "Slower scans often produce more accurate results"
+The Scanning is take some time "Slower scans often produce more accurate results"
 
 """)
 
