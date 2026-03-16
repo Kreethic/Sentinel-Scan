@@ -828,10 +828,18 @@ def run_scan(choice: int):
 # ──────────────────────────────────────────────
 
 def main():
-    # Check for root/sudo
-    if os.geteuid() != 0:
-        print(f"\n{Color.YELLOW}[!] Some scans (Nmap OS, Vuln) require root.{Color.RESET}")
-        print(f"{Color.YELLOW}[!] Run with: sudo python3 404_scanner_offline.py{Color.RESET}\n")
+    # Check for root/sudo — Linux only
+    import platform
+    if platform.system() == "Windows":
+        import ctypes
+        is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+        if not is_admin:
+            print(f"\n{Color.YELLOW}[!] Some scans require Administrator privileges.{Color.RESET}")
+            print(f"{Color.YELLOW}[!] Run as Administrator for full scan capabilities.{Color.RESET}\n")
+    else:
+        if os.geteuid() != 0:
+            print(f"\n{Color.YELLOW}[!] Some scans (Nmap OS, Vuln) require root.{Color.RESET}")
+            print(f"{Color.YELLOW}[!] Run with: sudo python3 main.py{Color.RESET}\n")
 
     banner()
     log_success("Offline mode — using Kali Linux built-in tools!\n")
