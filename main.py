@@ -53,7 +53,11 @@ def banner():
 |  $$$$$$/|  $$$$$$$|  $$$$$$$| $$  | $$
  \______/  \_______/ \_______/|__/  |__/
 {Color.RESET}
-{Color.MAGENTA}         Sentinel Scan  |  Team 404  |  Sentry Squad  |  Online Edition{Color.RESET}
+{Color.MAGENTA}         Sentinel Scan  | Powered by Kreethic  |  Sentry Squad  |  Online Edition{Color.RESET}
+
+
+                    The Scanning is take some time "Slower scans often produce more accurate results"
+
 """)
 
 def divider(char="─", length=70, color=Color.CYAN):
