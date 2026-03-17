@@ -760,7 +760,7 @@ def risk_badge(level: str) -> str:
 def print_report(result: dict):
     print()
     divider("=")
-    print(f"{Color.BOLD}  404 SCANNER - SCAN REPORT  |  Team 404{Color.RESET}")
+    print(f"{Color.BOLD}  SENTINEL SCANNER - SCAN REPORT  |  STAY SECURE! 🛡️{Color.RESET}")
     print(f"  Type   : {Color.CYAN}{result['type']}{Color.RESET}")
     print(f"  Target : {Color.MAGENTA}{result['target']}{Color.RESET}")
     print(f"  Time   : {Color.GRAY if hasattr(Color, 'GRAY') else ''}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{Color.RESET}")
@@ -801,9 +801,8 @@ def generate_report(result: dict) -> str:
     now   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = []
     lines.append("=" * 70)
-    lines.append("           404 SCANNER - VULNERABILITY REPORT")
-    lines.append("                    Team 404  |  Sentry Squad")
-    lines.append("                    Offline Edition")
+    lines.append("           SENTINEL SCANNER - VULNERABILITY REPORT")
+    lines.append("                      |  Sentry Squad")
     lines.append("=" * 70)
     lines.append(f"  Date        : {now}")
     lines.append(f"  Scan Type   : {result['type']}")
