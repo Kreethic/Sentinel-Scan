@@ -53,11 +53,7 @@ def banner():
 |  $$$$$$/|  $$$$$$$|  $$$$$$$| $$  | $$
  \______/  \_______/ \_______/|__/  |__/
 {Color.RESET}
-{Color.MAGENTA}         Sentinel Scan  | Powered by Kreethic  |  Sentry Squad  |  Online Edition{Color.RESET}
-
-
-The Scanning is take some time "Slower scans often produce more accurate results"
-
+{Color.MAGENTA}         Sentinel Scan  | Powered by Kreethic |  Sentry Squad  |  Online Edition{Color.RESET}
 """)
 
 def divider(char="─", length=70, color=Color.CYAN):
@@ -102,11 +98,12 @@ def check_tools():
 
 
 def run_command(cmd: list, timeout: int = 120) -> str:
-    """Run a shell command and return output."""
+    """Run a shell command and return output with optimized performance."""
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True,
-            timeout=timeout
+            timeout=timeout,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"}
         )
         output = result.stdout + result.stderr
         return output.strip()
@@ -259,9 +256,15 @@ def scan_ports_nmap(target: str) -> dict:
     log_info(f"Running Nmap port scan on: {target}")
     result = {"target": target, "type": "Port Scan (Nmap)", "flags": [], "info": {}, "output": ""}
 
-    cmd = ["nmap", "-sV", "-sC", "--open", "-T4", target]
+    # -n  = no DNS resolution (faster)
+    # -T4 = aggressive timing
+    # --min-rate 1000 = send at least 1000 packets/sec
+    # --max-retries 1 = only retry once (faster)
+    # -F  = fast mode — scan 100 most common ports only
+    cmd = ["nmap", "-sV", "-sC", "--open", "-T4",
+           "-n", "--min-rate", "1000", "--max-retries", "1", "-F", target]
     log_info(f"Command: {' '.join(cmd)}")
-    output = run_command(cmd, timeout=180)
+    output = run_command(cmd, timeout=120)
     result["output"] = output
 
     # Parse open ports
@@ -302,10 +305,14 @@ def scan_vuln_nmap(target: str) -> dict:
     log_info(f"Running Nmap vulnerability scan on: {target}")
     result = {"target": target, "type": "Vulnerability Scan (Nmap NSE)", "flags": [], "info": {}, "output": ""}
 
-    cmd = ["nmap", "--script", "vuln", "-T4", target]
+    # --script vuln = run vuln scripts only
+    # -T4 -n --min-rate 500 = faster with no DNS
+    # --max-retries 1 = don't retry too much
+    cmd = ["nmap", "--script", "vuln", "-T4", "-n",
+           "--min-rate", "500", "--max-retries", "1", target]
     log_info(f"Command: {' '.join(cmd)}")
-    log_warn("This scan may take 2-5 minutes...")
-    output = run_command(cmd, timeout=300)
+    log_warn("This scan may take 2-3 minutes...")
+    output = run_command(cmd, timeout=240)
     result["output"] = output
 
     # Parse vulnerabilities
@@ -336,9 +343,12 @@ def scan_os_nmap(target: str) -> dict:
     log_info(f"Running Nmap OS detection on: {target}")
     result = {"target": target, "type": "OS Detection (Nmap)", "flags": [], "info": {}, "output": ""}
 
-    cmd = ["nmap", "-O", "--osscan-guess", "-T4", target]
+    # --osscan-guess = aggressive OS guessing
+    # -n = no DNS, --max-retries 1 = faster
+    cmd = ["nmap", "-O", "--osscan-guess", "-T4",
+           "-n", "--max-retries", "1", target]
     log_info(f"Command: {' '.join(cmd)}")
-    output = run_command(cmd, timeout=120)
+    output = run_command(cmd, timeout=90)
     result["output"] = output
 
     # Parse OS detection
@@ -374,16 +384,23 @@ def scan_web_nikto(target: str) -> dict:
     log_info(f"Running Nikto web scan on: {target}")
     result = {"target": target, "type": "Web Scan (Nikto)", "flags": [], "info": {}, "output": ""}
 
-    # Ensure target has http/https
     if not target.startswith("http"):
         target_url = "http://" + target
     else:
         target_url = target
 
-    cmd = ["nikto", "-h", target_url, "-nointeractive"]
+    # -Tuning 1,2,3,4,5 = focus on key vulnerability types only (faster)
+    # -timeout 5        = short timeout per request
+    # -maxtime 120      = stop after 2 minutes max
+    # -nointeractive    = no prompts
+    cmd = ["nikto", "-h", target_url,
+           "-nointeractive",
+           "-Tuning", "1,2,3,4,5",
+           "-timeout", "5",
+           "-maxtime", "120"]
     log_info(f"Command: {' '.join(cmd)}")
-    log_warn("Nikto scan may take 3-10 minutes...")
-    output = run_command(cmd, timeout=600)
+    log_warn("Nikto scan running (max 2 min)...")
+    output = run_command(cmd, timeout=150)
     result["output"] = output
 
     # Parse Nikto findings
@@ -403,13 +420,51 @@ def scan_web_nikto(target: str) -> dict:
     if server:
         result["info"]["Web Server"] = server.group(1).strip()
 
-    # Headers info
-    if "X-Frame-Options" not in output:
-        result["flags"].append("Missing X-Frame-Options header (clickjacking risk)")
-    if "X-XSS-Protection" not in output:
-        result["flags"].append("Missing X-XSS-Protection header")
-    if "Strict-Transport-Security" not in output:
-        result["flags"].append("Missing HSTS header")
+    # ── Accurate HTTP Header Check using curl ──
+    log_info("Checking HTTP security headers...")
+    try:
+        header_cmd = ["curl", "-s", "-I",
+                      "--max-time", "10",
+                      "--connect-timeout", "5",
+                      "-L", target_url]
+        header_output = run_command(header_cmd, timeout=15).lower()
+
+        if header_output and "[x]" not in header_output:
+            # Only flag as missing if curl actually returned headers
+            if "x-frame-options" not in header_output:
+                result["flags"].append("Missing X-Frame-Options header (clickjacking risk)")
+                result["info"]["X-Frame-Options"] = "Not set"
+            else:
+                result["info"]["X-Frame-Options"] = "Present ✔"
+
+            if "x-xss-protection" not in header_output:
+                result["flags"].append("Missing X-XSS-Protection header")
+                result["info"]["X-XSS-Protection"] = "Not set"
+            else:
+                result["info"]["X-XSS-Protection"] = "Present ✔"
+
+            if "strict-transport-security" not in header_output:
+                result["flags"].append("Missing HSTS header (HTTPS not enforced)")
+                result["info"]["HSTS"] = "Not set"
+            else:
+                result["info"]["HSTS"] = "Present ✔"
+
+            if "content-security-policy" not in header_output:
+                result["flags"].append("Missing Content-Security-Policy header (XSS risk)")
+                result["info"]["CSP"] = "Not set"
+            else:
+                result["info"]["CSP"] = "Present ✔"
+
+            if "x-content-type-options" not in header_output:
+                result["flags"].append("Missing X-Content-Type-Options header (MIME sniffing risk)")
+                result["info"]["X-Content-Type"] = "Not set"
+            else:
+                result["info"]["X-Content-Type"] = "Present ✔"
+        else:
+            log_warn("Could not fetch HTTP headers — skipping header check")
+
+    except Exception as e:
+        log_warn(f"Header check failed: {e}")
 
     result["info"]["Findings"] = f"{vuln_count} vulnerability findings"
     result["risk"] = assess_risk(result["flags"])
@@ -430,20 +485,34 @@ def scan_dirs_gobuster(target: str) -> dict:
     else:
         target_url = target
 
-    # Use built-in Kali wordlist
-    wordlist = "/usr/share/wordlists/dirb/common.txt"
-    if not os.path.exists(wordlist):
-        wordlist = "/usr/share/dirb/wordlists/common.txt"
-    if not os.path.exists(wordlist):
+    # Use small wordlist for speed — falls back to common if small not found
+    wordlists = [
+        "/usr/share/wordlists/dirb/small.txt",       # 959 words  — fastest
+        "/usr/share/wordlists/dirb/common.txt",       # 4614 words — medium
+        "/usr/share/dirb/wordlists/common.txt",       # fallback
+    ]
+    wordlist = next((w for w in wordlists if os.path.exists(w)), None)
+    if not wordlist:
         result["info"]["Error"] = "Wordlist not found. Install: sudo apt install dirb"
         result["risk"] = "UNKNOWN"
         return result
 
-    cmd = ["gobuster", "dir", "-u", target_url, "-w", wordlist,
-           "-t", "50", "--no-error", "-q"]
+    result["info"]["Wordlist"] = os.path.basename(wordlist)
+
+    # -t 100     = 100 threads (faster than default 10)
+    # --timeout  = 3s per request
+    # -q         = quiet mode (less output overhead)
+    # --no-error = skip connection errors silently
+    cmd = ["gobuster", "dir",
+           "-u", target_url,
+           "-w", wordlist,
+           "-t", "100",
+           "--timeout", "3s",
+           "--no-error",
+           "-q"]
     log_info(f"Command: {' '.join(cmd)}")
-    log_warn("Gobuster scan may take 2-5 minutes...")
-    output = run_command(cmd, timeout=300)
+    log_warn("Gobuster scan running (fast mode)...")
+    output = run_command(cmd, timeout=120)
     result["output"] = output
 
     # Parse found directories
@@ -529,9 +598,13 @@ def scan_ssl(target: str) -> dict:
 
     domain = re.sub(r"https?://", "", target).split("/")[0]
 
-    cmd = ["sslscan", "--no-colour", domain]
+    # --no-heartbleed = skip heartbleed check (saves ~5s)
+    # --no-colour     = faster output parsing
+    # --connect-timeout 5 = don't wait too long
+    cmd = ["sslscan", "--no-colour", "--no-heartbleed",
+           "--connect-timeout=5", domain]
     log_info(f"Command: {' '.join(cmd)}")
-    output = run_command(cmd, timeout=60)
+    output = run_command(cmd, timeout=30)
     result["output"] = output
 
     # Parse SSL info
@@ -589,9 +662,15 @@ def scan_whatweb(target: str) -> dict:
     else:
         target_url = target
 
-    cmd = ["whatweb", "-a", "3", "--no-errors", target_url]
+    # -a 1 = passive scan (faster than -a 3 aggressive)
+    # --open-timeout 5 = short timeout
+    # --read-timeout 5 = short read timeout
+    cmd = ["whatweb", "-a", "1",
+           "--open-timeout", "5",
+           "--read-timeout", "5",
+           "--no-errors", target_url]
     log_info(f"Command: {' '.join(cmd)}")
-    output = run_command(cmd, timeout=60)
+    output = run_command(cmd, timeout=30)
     result["output"] = output
 
     # Parse technologies
@@ -636,14 +715,15 @@ def scan_dns_dig(target: str) -> dict:
     result = {"target": target, "type": "DNS Analysis (Dig)", "flags": [], "info": {}, "output": ""}
 
     domain = re.sub(r"https?://", "", target).split("/")[0]
-
     all_output = ""
 
-    # Query multiple record types
+    # +time=2  = 2 second timeout per query (faster)
+    # +tries=1 = only try once (faster)
+    # +short   = short output
     record_types = ["A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA"]
     for rtype in record_types:
-        cmd = ["dig", domain, rtype, "+short"]
-        out = run_command(cmd, timeout=15)
+        cmd = ["dig", domain, rtype, "+short", "+time=2", "+tries=1"]
+        out = run_command(cmd, timeout=8)
         if out and "error" not in out.lower() and out.strip():
             result["info"][f"{rtype} Record"] = out.strip()[:100]
             all_output += f"\n{rtype}:\n{out}\n"
@@ -656,16 +736,16 @@ def scan_dns_dig(target: str) -> dict:
         result["flags"].append("No SPF record found (email spoofing risk)")
 
     # Check DMARC
-    cmd_dmarc = ["dig", f"_dmarc.{domain}", "TXT", "+short"]
-    dmarc_out = run_command(cmd_dmarc, timeout=15)
+    cmd_dmarc = ["dig", f"_dmarc.{domain}", "TXT", "+short", "+time=2", "+tries=1"]
+    dmarc_out = run_command(cmd_dmarc, timeout=8)
     if "v=DMARC1" in dmarc_out:
         result["info"]["DMARC"] = "DMARC record found ✔"
     else:
         result["flags"].append("No DMARC record found (email spoofing risk)")
 
     # Check DNSSEC
-    cmd_dnssec = ["dig", domain, "DNSKEY", "+short"]
-    dnssec_out = run_command(cmd_dnssec, timeout=15)
+    cmd_dnssec = ["dig", domain, "DNSKEY", "+short", "+time=2", "+tries=1"]
+    dnssec_out = run_command(cmd_dnssec, timeout=8)
     if dnssec_out.strip():
         result["info"]["DNSSEC"] = "DNSSEC enabled ✔"
     else:
@@ -760,7 +840,7 @@ def risk_badge(level: str) -> str:
 def print_report(result: dict):
     print()
     divider("=")
-    print(f"{Color.BOLD}  SENTINEL SCANNER - SCAN REPORT  |  STAY SECURE! 🛡️{Color.RESET}")
+    print(f"{Color.BOLD}  SENTINEL SCANNER - SCAN REPORT  |  Powered by Kreethic{Color.RESET}")
     print(f"  Type   : {Color.CYAN}{result['type']}{Color.RESET}")
     print(f"  Target : {Color.MAGENTA}{result['target']}{Color.RESET}")
     print(f"  Time   : {Color.GRAY if hasattr(Color, 'GRAY') else ''}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{Color.RESET}")
@@ -802,7 +882,8 @@ def generate_report(result: dict) -> str:
     lines = []
     lines.append("=" * 70)
     lines.append("           SENTINEL SCANNER - VULNERABILITY REPORT")
-    lines.append("                      |  Sentry Squad")
+    lines.append("                    Powered by Kreethic  |  Sentry Squad")
+    lines.append("                    Offline Edition")
     lines.append("=" * 70)
     lines.append(f"  Date        : {now}")
     lines.append(f"  Scan Type   : {result['type']}")
@@ -842,7 +923,7 @@ def generate_report(result: dict) -> str:
         lines.append("")
 
     lines.append("=" * 70)
-    lines.append("  Generated by Sentinel Scan | Team 404 | Sentry Squad | Online Edition")
+    lines.append("  Generated by Sentinel Scan | Powered by Kreethic | Sentry Squad | Online Edition")
     lines.append("=" * 70)
     return "\n".join(lines)
 
@@ -875,7 +956,7 @@ MENU_OPTIONS = [
     ("[9]  DNS Analysis   ", "Dig      — Full DNS record analysis"),
     ("[10] Full Scan      ", "ALL      — Run every scan on one target"),
     ("[11] Check Tools    ", "Verify   — Check all required tools are installed"),
-    ("[12] Exit           ", "Quit     — Exit Sentinel Scan"),
+    ("[12] Exit           ", "Quit     — Exit Sentinel Scanner"),
 ]
 
 def show_menu():
