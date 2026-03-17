@@ -876,7 +876,7 @@ MENU_OPTIONS = [
     ("[9]  DNS Analysis   ", "Dig      — Full DNS record analysis"),
     ("[10] Full Scan      ", "ALL      — Run every scan on one target"),
     ("[11] Check Tools    ", "Verify   — Check all required tools are installed"),
-    ("[12] Exit           ", "Quit     — Exit 404 Scanner"),
+    ("[12] Exit           ", "Quit     — Exit Sentinel Scan"),
 ]
 
 def show_menu():
